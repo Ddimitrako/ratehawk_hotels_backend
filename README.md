@@ -90,6 +90,12 @@ FRONTEND_ORIGIN=http://localhost:3000
 uvicorn server.main:app --reload
 ```
 
+Alternatively, if you prefer the FastAPI CLI:
+
+```bash
+fastapi run --app server.main:app
+```
+
 The automatic OpenAPI documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ### Available endpoints
