@@ -11,7 +11,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import requests
 from fastapi import HTTPException
 
-from papi_sdk.models.hotel_info import HotelInfoData, HotelInfoRequest
+from pydantic import ValidationError
+
+from papi_sdk.endpoints.endpoints import Endpoint
+from papi_sdk.models.hotel_info import HotelInfoData, HotelInfoRequest, HotelInfoResponse
 from papi_sdk.models.search.base_request import GuestsGroup
 from papi_sdk.models.search.region.b2b import B2BRegionRequest
 
@@ -198,7 +201,24 @@ class RatehawkService:
             return self._info_cache[cache_key]
 
         request = HotelInfoRequest(id=hotel_id, language=lang)
-        response = self.api.get_hotel_info(data=request, timeout=self.settings.request_timeout)
+        try:
+            response = self.api.get_hotel_info(data=request, timeout=self.settings.request_timeout)
+        except ValidationError:
+            raw = self.api._post_request(  # type: ignore[attr-defined]
+                Endpoint.HOTEL_INFO.value,
+                json=request.dict(exclude_none=True),
+                timeout=self.settings.request_timeout,
+            )
+            data = raw.get("data")
+            if isinstance(data, dict):
+                room_groups = data.get("room_groups")
+                if room_groups is None:
+                    data["room_groups"] = []
+                elif isinstance(room_groups, list):
+                    for group in room_groups:
+                        if isinstance(group, dict) and group.get("images") is None:
+                            group["images"] = []
+            response = HotelInfoResponse(**raw)
         if response.error:
             raise RatehawkClientError(str(response.error))
         if not response.data:
