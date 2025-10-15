@@ -21,6 +21,7 @@ def create_app(settings: Settings) -> FastAPI:
     service = RatehawkService(settings)
 
     app = FastAPI(title="RateHawk Hotels API", version="0.1.0")
+    app.state.ratehawk_service = service
 
     app.add_middleware(
         CORSMiddleware,
