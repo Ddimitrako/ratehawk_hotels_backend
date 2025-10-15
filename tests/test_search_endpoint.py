@@ -1,13 +1,18 @@
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("PAPI_AUTH_KEY", "1:test")
 
-from fastapi.testclient import TestClient
+try:
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover - executed only when dependency missing
+    pytest.skip("FastAPI is not installed", allow_module_level=True)
 
 from papi_sdk.models.hotel_info import HotelInfoResponse
 from papi_sdk.models.search.region.b2b import B2BRegionResponse

@@ -209,22 +209,45 @@ class RatehawkService:
                 json=request.dict(exclude_none=True),
                 timeout=self.settings.request_timeout,
             )
-            data = raw.get("data")
-            if isinstance(data, dict):
-                room_groups = data.get("room_groups")
-                if room_groups is None:
-                    data["room_groups"] = []
-                elif isinstance(room_groups, list):
-                    for group in room_groups:
-                        if isinstance(group, dict) and group.get("images") is None:
-                            group["images"] = []
-            response = HotelInfoResponse(**raw)
+            sanitized = self._sanitize_hotel_info_payload(raw)
+            response = HotelInfoResponse(**sanitized)
         if response.error:
             raise RatehawkClientError(str(response.error))
         if not response.data:
             return None
         self._info_cache[cache_key] = response.data
         return response.data
+
+    @staticmethod
+    def _sanitize_hotel_info_payload(raw: dict) -> dict:
+        """Replace null collections with empty structures so Pydantic can parse."""
+
+        data = raw.get("data")
+        if not isinstance(data, dict):
+            return raw
+
+        room_groups = data.get("room_groups")
+        if room_groups is None:
+            data["room_groups"] = []
+        elif isinstance(room_groups, list):
+            for group in room_groups:
+                if not isinstance(group, dict):
+                    continue
+                if group.get("images") is None:
+                    group["images"] = []
+                if group.get("room_amenities") is None:
+                    group["room_amenities"] = []
+                if group.get("rg_ext") is None:
+                    group["rg_ext"] = {}
+
+        if data.get("images") is None:
+            data["images"] = []
+
+        amenity_groups = data.get("amenity_groups")
+        if amenity_groups is None:
+            data["amenity_groups"] = []
+
+        return raw
 
     @staticmethod
     def _select_price(rates) -> PriceInfo:
