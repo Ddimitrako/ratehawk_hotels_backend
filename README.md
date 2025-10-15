@@ -98,6 +98,19 @@ fastapi run --app server.main:app
 
 The automatic OpenAPI documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
+### Run with Docker Compose
+
+If you would rather avoid installing Python locally, the repository includes a Docker setup that
+starts the API with live-reload support:
+
+```bash
+cp .env.example .env  # make sure your credentials are filled in
+docker compose up --build
+```
+
+The service will be available at [http://localhost:8000](http://localhost:8000). Any source changes
+on the host are mounted into the container so you can iterate without rebuilding.
+
 ### Available endpoints
 
 - `GET /api/v1/healthz` – health check for monitoring.
