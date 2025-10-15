@@ -21,9 +21,12 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.6"
+python = "^3.8"
 requests = "^2.25.1"
 pydantic = "^1.7.3"
+fastapi = "^0.88.0"
+uvicorn = {version = "^0.17.0", extras = ["standard"]}
+python-dotenv = "^0.21.0"
 
 [tool.poetry.dev-dependencies]
 black = "^20.8b1"
