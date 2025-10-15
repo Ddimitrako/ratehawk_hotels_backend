@@ -1,5 +1,6 @@
 """Configuration models for the FastAPI service."""
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional, Tuple
 
 from pydantic import BaseSettings, Field, SecretStr, validator
@@ -47,7 +48,7 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ".env"
+        env_file = Path(__file__).resolve().parent.parent / ".env"
         env_file_encoding = "utf-8"
 
     @validator("request_timeout")
