@@ -59,8 +59,16 @@ def create_app(settings: Settings) -> FastAPI:
     )
     async def search_hotels(
         location_id: int = Query(..., description="Region identifier returned by autocomplete"),
-        check_in: date = Query(..., alias="check_in"),
-        check_out: date = Query(..., alias="check_out"),
+        check_in: date = Query(
+            ...,
+            description="Check-in date in ISO format (YYYY-MM-DD)",
+            example="2024-06-01",
+        ),
+        check_out: date = Query(
+            ...,
+            description="Check-out date in ISO format (YYYY-MM-DD)",
+            example="2024-06-05",
+        ),
         adults: int = Query(2, ge=1),
         children: Optional[List[int]] = Query(None),
         currency: Optional[str] = Query(None),

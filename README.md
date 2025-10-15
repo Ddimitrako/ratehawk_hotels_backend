@@ -102,7 +102,7 @@ The automatic OpenAPI documentation is available at [http://localhost:8000/docs]
 
 - `GET /api/v1/healthz` – health check for monitoring.
 - `GET /api/v1/locations/autocomplete?q=athens` – RateHawk multicomplete wrapper.
-- `GET /api/v1/hotels/search?location_id=…&check_in=…&check_out=…&adults=2` – hotel search with pagination and filters.
+- `GET /api/v1/hotels/search?location_id=…&check_in=YYYY-MM-DD&check_out=YYYY-MM-DD&adults=2` – hotel search with pagination and filters (dates must be in ISO format, e.g. `2024-06-01`).
 - `GET /api/v1/hotels/{hotel_id}` – detailed hotel description enriched with amenities.
 - `GET /api/v1/hotels/{hotel_id}/photos` – image gallery for the selected hotel.
 
