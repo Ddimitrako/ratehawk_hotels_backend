@@ -82,6 +82,9 @@ PAPI_DEFAULT_LANGUAGE=en
 PAPI_DEFAULT_CURRENCY=EUR
 FRONTEND_ORIGIN=http://localhost:3000
 # PAPI_BASE_PATH=https://api-sandbox.worldota.net/
+# Optional rate limiting and caching
+# PAPI_INFO_BUDGET=25                      # Max Hotel Info calls per search
+# PAPI_HOTEL_CACHE_PATH=./.cache/hotel_info.sqlite  # Persistent Hotel Info cache
 ```
 
 ### 3. Run the development server
@@ -111,6 +114,10 @@ docker compose up --build
 The service will be available at [http://localhost:8000](http://localhost:8000). Any source changes
 on the host are mounted into the container so you can iterate without rebuilding.
 
+On startup the container will attempt to pre-warm the Hotel Info cache if `PAPI_HOTEL_CACHE_PATH` is set
+and the file is missing. It will call the dump endpoint using your credentials and import it.
+To use sandbox, set `PAPI_BASE_PATH=https://api-sandbox.worldota.net/`.
+
 ### Available endpoints
 
 - `GET /api/v1/healthz` – health check for monitoring.
@@ -135,3 +142,38 @@ All responses are shaped for the React booking UI, for example search results lo
 ```
 
 The FastAPI application enables the React frontend to render hotel lists, detail pages, and photo galleries using live data from the RateHawk pAPI.
+
+### Caching Hotel Info (recommended)
+
+To avoid hitting per‑minute limits and speed up search results, the backend can persist Hotel Info payloads locally and reuse them across requests:
+
+- Set `PAPI_HOTEL_CACHE_PATH` to a writable SQLite file (e.g. `./.cache/hotel_info.sqlite`).
+- Optionally tune `PAPI_INFO_BUDGET` to cap Hotel Info requests per search.
+
+With the cache enabled, search results hydrate from cached content first and only call the upstream API for missing hotels.
+
+### Pre-warm cache from dump
+
+You can import the ETG hotel dump into the local cache to avoid hitting limits on first runs:
+
+- Install dependency: `pip install zstandard`
+- Download a dump (or use an existing `.zst` file) following ETG’s documentation.
+- Run the importer:
+
+```
+python tools/import_dump_to_cache.py partner_feed_en.json.zst --language en --cache ./.cache/hotel_info.sqlite
+```
+
+Use `--limit N` to import only the first N hotels for testing.
+
+Alternatively, fetch the dump via API and import in one step:
+
+```
+python tools/fetch_and_import_dump.py --language en --cache ./.cache/hotel_info.sqlite --out ./partner_feed_en.json.zst
+```
+
+### Cache stats endpoint
+
+You can monitor cache usage via:
+
+- `GET /api/v1/cache/stats` → `{ enabled, path, count, lastUpdated, infoBudget }`

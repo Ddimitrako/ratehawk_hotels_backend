@@ -3,7 +3,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
-from pydantic import BaseSettings, Field, SecretStr, validator
+# Support both Pydantic v1 and v2 (where BaseSettings moved to pydantic-settings)
+try:  # Preferred for Pydantic v2
+    from pydantic_settings import BaseSettings  # type: ignore
+except Exception:  # pragma: no cover - fallback for Pydantic v1
+    try:
+        from pydantic import BaseSettings  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise ImportError(
+            "Install 'pydantic-settings' for Pydantic v2: pip install pydantic-settings"
+        ) from exc
+
+from pydantic import Field, SecretStr, validator
 
 
 class Settings(BaseSettings):
@@ -36,6 +47,11 @@ class Settings(BaseSettings):
         env="PAPI_TIMEOUT_SECONDS",
         description="HTTP timeout (seconds) for outgoing requests to RateHawk APIs.",
     )
+    info_budget: int = Field(
+        25,
+        env="PAPI_INFO_BUDGET",
+        description="Max Hotel Info calls per search to avoid upstream rate limits.",
+    )
     base_path: Optional[str] = Field(
         None,
         env="PAPI_BASE_PATH",
@@ -46,6 +62,11 @@ class Settings(BaseSettings):
         env="FRONTEND_ORIGIN",
         description="Origin allowed for browser requests (CORS).",
     )
+    hotel_cache_path: Optional[str] = Field(
+        None,
+        env="PAPI_HOTEL_CACHE_PATH",
+        description="Optional path to a SQLite file for persisting Hotel Info cache.",
+    )
 
     class Config:
         env_file = Path(__file__).resolve().parent.parent / ".env"
@@ -55,6 +76,12 @@ class Settings(BaseSettings):
     def _validate_timeout(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("request_timeout must be positive")
+        return value
+
+    @validator("info_budget")
+    def _validate_info_budget(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("info_budget must be positive")
         return value
 
     def auth_tuple(self) -> Tuple[str, str]:

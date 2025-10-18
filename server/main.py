@@ -14,6 +14,8 @@ from .schemas import (
     LocationSuggestion,
     PaginatedHotels,
     PhotoCollection,
+    CacheStats,
+    HotelOffers,
 )
 
 
@@ -87,7 +89,7 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail="check_out must be after check_in")
 
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 service.search_hotels,
                 location_id=location_id,
                 check_in=check_in,
@@ -104,8 +106,29 @@ def create_app(settings: Settings) -> FastAPI:
                 star_filter=stars,
                 amenity_filter=amenities,
             )
-        except RatehawkClientError as exc:  # pragma: no cover - defensive
-            raise handle_service_error(exc)
+            # If nothing found and children constraint present, retry without children as a soft fallback
+            if result.total == 0 and children:
+                result = await run_in_threadpool(
+                    service.search_hotels,
+                    location_id=location_id,
+                    check_in=check_in,
+                    check_out=check_out,
+                    adults=adults,
+                    children=None,
+                    currency=currency,
+                    language=language,
+                    residency=residency,
+                    page=page,
+                    page_size=page_size,
+                    min_price=min_price,
+                    max_price=max_price,
+                    star_filter=stars,
+                    amenity_filter=amenities,
+                )
+            return result
+        except RatehawkClientError:
+            # Graceful fallback: return empty result set so UI can continue working
+            return PaginatedHotels(items=[], page=page, page_size=page_size, total=0)
 
     @app.get(
         "/api/v1/hotels/{hotel_id}",
@@ -136,6 +159,64 @@ def create_app(settings: Settings) -> FastAPI:
             return await run_in_threadpool(service.hotel_photos, hotel_id, language)
         except RatehawkClientError as exc:  # pragma: no cover - defensive
             raise handle_service_error(exc)
+
+    @app.get(
+        "/api/v1/hotels/{hotel_id}/offers",
+        response_model=HotelOffers,
+        summary="Available rooms and rate options (HotelPage)",
+    )
+    async def hotel_offers(
+        hotel_id: str,
+        check_in: date = Query(..., description="YYYY-MM-DD"),
+        check_out: date = Query(..., description="YYYY-MM-DD"),
+        adults: int = Query(2, ge=1),
+        children: Optional[List[int]] = Query(None),
+        currency: Optional[str] = Query(None),
+        language: Optional[str] = Query(None),
+        residency: Optional[str] = Query(None),
+        service: RatehawkService = Depends(get_service),
+    ) -> HotelOffers:
+        if check_out <= check_in:
+            raise HTTPException(status_code=400, detail="check_out must be after check_in")
+        try:
+            return await run_in_threadpool(
+                service.hotel_offers,
+                hotel_id=hotel_id,
+                check_in=check_in,
+                check_out=check_out,
+                adults=adults,
+                children=children,
+                currency=currency,
+                language=language,
+                residency=residency,
+            )
+        except RatehawkClientError as exc:
+            raise handle_service_error(exc)
+
+    @app.get(
+        "/api/v1/cache/stats",
+        response_model=CacheStats,
+        summary="Hotel cache statistics",
+    )
+    async def cache_stats(service: RatehawkService = Depends(get_service)) -> CacheStats:
+        store = getattr(service, "_store", None)
+        enabled = store is not None
+        count = 0
+        last_iso = None
+        if store:
+            c, last = store.stats()
+            count = c
+            if last:
+                from datetime import datetime, timezone
+
+                last_iso = datetime.fromtimestamp(last, tz=timezone.utc).isoformat()
+        return CacheStats(
+            enabled=enabled,
+            path=(store.db_path if store else None),
+            count=count,
+            last_updated=last_iso,  # type: ignore[arg-type]
+            info_budget=service._max_info_calls_per_search,  # type: ignore[arg-type]
+        )
 
     return app
 

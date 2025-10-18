@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import os
 from dataclasses import dataclass
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -16,10 +17,24 @@ from pydantic import ValidationError
 from papi_sdk.endpoints.endpoints import Endpoint
 from papi_sdk.models.hotel_info import HotelInfoData, HotelInfoRequest, HotelInfoResponse
 from papi_sdk.models.search.base_request import GuestsGroup
-from papi_sdk.models.search.region.b2b import B2BRegionRequest
+from papi_sdk.models.search.region.b2b import B2BRegionRequest, B2BRegionResponse
+from papi_sdk.models.search.hotelpage.b2b import B2BHotelPageRequest
 
 from .config import Settings
-from .schemas import HotelDetails, HotelSummary, Location, LocationSuggestion, PaginatedHotels, PhotoCollection, Price
+from .hotel_cache import HotelInfoStore
+from .schemas import (
+    HotelDetails,
+    HotelSummary,
+    Location,
+    LocationSuggestion,
+    PaginatedHotels,
+    PhotoCollection,
+    Price,
+    HotelOffers,
+    OfferRoom,
+    OfferOption,
+    OfferPrice,
+)
 
 
 class RatehawkClientError(Exception):
@@ -42,6 +57,17 @@ class RatehawkService:
         self.base_path = self._configure_base_path(settings.base_path)
         self.api = self._build_client(settings)
         self.session = self.api.session
+        # Avoid hitting RateHawk per-minute limits for hotel info
+        self._max_info_calls_per_search: int = settings.info_budget
+        # Optional persistent cache for hotel info responses
+        self._store: Optional[HotelInfoStore] = None
+        if settings.hotel_cache_path:
+            try:
+                self._store = HotelInfoStore(settings.hotel_cache_path)
+            except Exception as exc:  # pragma: no cover - defensive
+                logging.getLogger(__name__).warning(
+                    "Failed to init HotelInfoStore at %s: %s", settings.hotel_cache_path, exc
+                )
 
     @staticmethod
     def _configure_base_path(base_path: Optional[str]) -> str:
@@ -131,11 +157,26 @@ class RatehawkService:
             checkout=check_out,
             currency=currency or self.settings.default_currency,
             language=language or self.settings.default_language,
-            residency=residency or self.settings.default_residency,
+            # Ensure residency is always provided; some upstreams require it
+            residency=(residency or self.settings.default_residency or "US"),
             guests=[guests_group],
         )
-
-        response = self.api.b2b_search_region(data=request, timeout=self.settings.request_timeout)
+        # Use low-level call to support page/page_size which SDK model doesn't include
+        # Ensure dates are ISO strings for JSON serialization
+        payload = request.dict(exclude_none=True)
+        payload.update({
+            "checkin": check_in.isoformat(),
+            "checkout": check_out.isoformat(),
+            "page": page,
+            "page_size": page_size,
+            "sort": "popularity",
+        })
+        raw = self.api._post_request(  # type: ignore[attr-defined]
+            Endpoint.SEARCH_REGION.value,
+            json=payload,
+            timeout=self.settings.request_timeout,
+        )
+        response = B2BRegionResponse(**raw)
         if response.error:
             raise RatehawkClientError(str(response.error))
         if not response.data:
@@ -143,11 +184,42 @@ class RatehawkService:
 
         hotels = response.data.hotels or []
         filtered: List[HotelSummary] = []
+        info_budget = self._max_info_calls_per_search
+        # We only need up to this many results to serve the requested page.
+        needed = page_size
+        log = logging.getLogger(__name__)
+        processed_all = True
+
         for hotel in hotels:
+            # First, compute price info and apply price-only filters to avoid unnecessary info calls
             price_info = self._select_price(hotel.rates)
-            info = self._hotel_info(hotel_id=hotel.id, language=language)
+            if min_price is not None or max_price is not None:
+                per_night = float(price_info.per_night) if price_info.per_night is not None else None
+                if min_price is not None and (per_night is None or per_night < min_price):
+                    continue
+                if max_price is not None and (per_night is None or per_night > max_price):
+                    continue
+
+            if info_budget <= 0:
+                # We've reached our per-request budget to avoid endpoint_exceeded_limit
+                processed_all = False
+                break
+
+            try:
+                info = self._hotel_info(hotel_id=hotel.id, language=language)
+            except RatehawkClientError as exc:
+                log.warning("hotel_info failed for id=%s: %s", hotel.id, exc)
+                # If we've exceeded the upstream limit, stop early to return partial results faster
+                if "endpoint_exceeded_limit" in str(exc):
+                    processed_all = False
+                    break
+                continue
+            finally:
+                info_budget -= 1
+
             if not info:
                 continue
+
             summary = self._build_hotel_summary(hotel.id, info, price_info, hotel.rates)
 
             if not self._passes_filters(
@@ -161,10 +233,15 @@ class RatehawkService:
                 continue
             filtered.append(summary)
 
-        total = len(filtered)
-        start = (page - 1) * page_size
-        end = start + page_size
-        paginated_items = filtered[start:end]
+            # Stop once we've collected enough items to serve the requested page
+            if len(filtered) >= needed:
+                processed_all = False
+                break
+
+        # Prefer upstream total to keep correct pagination across pages
+        total = getattr(response.data, "total_hotels", None) or len(filtered)
+        # Upstream already returns the requested page; no additional slicing needed
+        paginated_items = filtered
         return PaginatedHotels(items=paginated_items, page=page, page_size=page_size, total=total)
 
     def hotel_details(self, hotel_id: str, language: Optional[str] = None) -> HotelDetails:
@@ -191,6 +268,86 @@ class RatehawkService:
             raise RatehawkClientError(f"Hotel {hotel_id} not found")
         return PhotoCollection(hotelId=hotel_id, photos=info.images or [])
 
+    def hotel_offers(
+        self,
+        *,
+        hotel_id: str,
+        check_in: date,
+        check_out: date,
+        adults: int,
+        children: Optional[Sequence[int]] = None,
+        currency: Optional[str] = None,
+        language: Optional[str] = None,
+        residency: Optional[str] = None,
+    ) -> HotelOffers:
+        guests_group = GuestsGroup(
+            adults=adults,
+            children=list(children) if children else None,
+        )
+        request = B2BHotelPageRequest(
+            id=hotel_id,
+            checkin=check_in,
+            checkout=check_out,
+            currency=currency or self.settings.default_currency,
+            language=language or self.settings.default_language,
+            residency=(residency or self.settings.default_residency or "US"),
+            guests=[guests_group],
+        )
+
+        resp = self.api.b2b_search_hotel_page(data=request, timeout=self.settings.request_timeout)
+        if resp.error:
+            raise RatehawkClientError(str(resp.error))
+        hotels = (resp.data.hotels if resp.data else []) or []
+        if not hotels:
+            return HotelOffers(hotelId=hotel_id, rooms=[])
+
+        rooms_map: Dict[str, OfferRoom] = {}
+        for rate in hotels[0].rates:
+            room_name = getattr(rate, "room_name", None) or "Room"
+            capacity = getattr(rate.rg_ext, "capacity", None) if getattr(rate, "rg_ext", None) else None
+            amenities = getattr(rate, "amenities_data", None) or []
+            price_info = self._select_price([rate])
+            try:
+                daily_prices = [float(p) for p in (rate.daily_prices or [])]
+            except Exception:
+                daily_prices = []
+
+            refundable_until = None
+            payment_type = None
+            try:
+                if rate.payment_options and rate.payment_options.payment_types:
+                    pt = rate.payment_options.payment_types[0]
+                    payment_type = pt.type
+                    pen = pt.cancellation_penalties
+                    if pen and pen.free_cancellation_before:
+                        refundable_until = pen.free_cancellation_before
+            except Exception:
+                pass
+
+            option = OfferOption(
+                meal=getattr(rate, "meal", None),
+                dailyPrices=daily_prices,  # type: ignore[arg-type]
+                price=OfferPrice(
+                    perNight=float(price_info.per_night) if price_info.per_night is not None else None,
+                    total=float(price_info.total) if price_info.total is not None else None,
+                    currency=price_info.currency,
+                ),
+                refundableUntil=refundable_until,  # type: ignore[arg-type]
+                paymentType=payment_type,  # type: ignore[arg-type]
+            )
+
+            if room_name not in rooms_map:
+                rooms_map[room_name] = OfferRoom(
+                    name=room_name,
+                    capacity=capacity,
+                    amenities=amenities,
+                    options=[option],
+                )
+            else:
+                rooms_map[room_name].options.append(option)
+
+        return HotelOffers(hotelId=hotel_id, rooms=list(rooms_map.values()))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -199,6 +356,28 @@ class RatehawkService:
         cache_key = (hotel_id, lang)
         if cache_key in self._info_cache:
             return self._info_cache[cache_key]
+
+        # Try persistent cache first (if configured)
+        if self._store:
+            cached = self._store.get(hotel_id, lang)
+            if cached:
+                try:
+                    # cached is expected to be a full HotelInfoResponse payload
+                    response = HotelInfoResponse(**cached)
+                    if response.data:
+                        self._info_cache[cache_key] = response.data
+                        return response.data
+                except ValidationError:
+                    # Try to sanitize and parse again
+                    sanitized = self._sanitize_hotel_info_payload(cached)
+                    try:
+                        response = HotelInfoResponse(**sanitized)
+                        if response.data:
+                            self._info_cache[cache_key] = response.data
+                            return response.data
+                    except ValidationError:
+                        # ignore corrupt cache entries
+                        pass
 
         request = HotelInfoRequest(id=hotel_id, language=lang)
         try:
@@ -210,7 +389,19 @@ class RatehawkService:
                 timeout=self.settings.request_timeout,
             )
             sanitized = self._sanitize_hotel_info_payload(raw)
-            response = HotelInfoResponse(**sanitized)
+            try:
+                response = HotelInfoResponse(**sanitized)
+            except ValidationError as exc:
+                # If still not parseable, surface a controlled error upstream
+                raise RatehawkClientError(f"hotel_info payload invalid for {hotel_id}: {exc}") from exc
+        # Persist successful responses (sanitize first to be safe)
+        if self._store:
+            try:
+                payload = response.dict()
+                payload = self._sanitize_hotel_info_payload(payload)
+                self._store.set(hotel_id, lang, payload)
+            except Exception:  # pragma: no cover - best-effort persistence
+                pass
         if response.error:
             raise RatehawkClientError(str(response.error))
         if not response.data:
@@ -246,6 +437,10 @@ class RatehawkService:
         amenity_groups = data.get("amenity_groups")
         if amenity_groups is None:
             data["amenity_groups"] = []
+
+        # Some hotels may return serp_filters as null; ensure it's a list
+        if data.get("serp_filters") is None:
+            data["serp_filters"] = []
 
         return raw
 
@@ -363,3 +558,4 @@ def handle_service_error(exc: RatehawkClientError) -> HTTPException:
     """Convert Ratehawk client errors to HTTP responses."""
 
     return HTTPException(status_code=502, detail=str(exc))
+

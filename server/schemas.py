@@ -79,3 +79,51 @@ class PhotoCollection(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+# --- Hotel offers (HotelPage) ---
+
+class OfferPrice(BaseModel):
+    per_night: Optional[float] = Field(None, alias="perNight")
+    total: Optional[float] = None
+    currency: Optional[str] = None
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class OfferOption(BaseModel):
+    meal: Optional[str] = None
+    daily_prices: List[float] = Field(default_factory=list, alias="dailyPrices")
+    price: OfferPrice
+    refundable_until: Optional[str] = Field(None, alias="refundableUntil")
+    payment_type: Optional[str] = Field(None, alias="paymentType")
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class OfferRoom(BaseModel):
+    name: str
+    capacity: Optional[int] = None
+    amenities: List[str] = []
+    options: List[OfferOption]
+
+
+class HotelOffers(BaseModel):
+    hotel_id: str = Field(..., alias="hotelId")
+    rooms: List[OfferRoom]
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class CacheStats(BaseModel):
+    enabled: bool
+    path: Optional[str] = None
+    count: int
+    last_updated: Optional[str] = Field(None, alias="lastUpdated")
+    info_budget: int = Field(..., alias="infoBudget")
+
+    class Config:
+        allow_population_by_field_name = True
