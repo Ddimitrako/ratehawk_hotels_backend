@@ -250,6 +250,7 @@ class RatehawkService:
             raise RatehawkClientError(f"Hotel {hotel_id} not found")
 
         summary = self._build_hotel_summary(hotel_id, info, PriceInfo(None, None, None), [])
+        photos = self._normalize_images(getattr(info, "images", None))
 
         return HotelDetails(
             **summary.dict(),
@@ -259,14 +260,15 @@ class RatehawkService:
             email=info.email,
             phone=info.phone,
             postal_code=info.postal_code,
-            photos=info.images or [],
+            photos=photos,
         )
 
     def hotel_photos(self, hotel_id: str, language: Optional[str] = None) -> PhotoCollection:
         info = self._hotel_info(hotel_id, language)
         if not info:
             raise RatehawkClientError(f"Hotel {hotel_id} not found")
-        return PhotoCollection(hotelId=hotel_id, photos=info.images or [])
+        photos = self._normalize_images(getattr(info, "images", None))
+        return PhotoCollection(hotelId=hotel_id, photos=photos)
 
     def hotel_offers(
         self,
@@ -505,7 +507,8 @@ class RatehawkService:
             total=float(price_info.total) if price_info.total is not None else None,
         )
 
-        thumbnail = info.images[0] if info.images else None
+        _images = self._normalize_images(getattr(info, "images", None))
+        thumbnail = _images[0] if _images else None
         return HotelSummary(
             id=hotel_id,
             name=info.name,
@@ -516,6 +519,36 @@ class RatehawkService:
             location=location,
             amenities=amenities,
         )
+
+    @staticmethod
+    def _normalize_images(images) -> list:
+        out = []
+        try:
+            for p in (images or []):
+                url = None
+                if isinstance(p, str):
+                    url = p
+                elif isinstance(p, dict):
+                    for key in ("url", "orig", "original", "large", "full", "thumb", "href"):
+                        v = p.get(key)
+                        if isinstance(v, str):
+                            url = v
+                            break
+                if not url:
+                    continue
+                if url.startswith("//"):
+                    url = "https:" + url
+                # Replace templated size placeholders commonly returned by cdn.worldota.net
+                if "cdn.worldota.net" in url:
+                    for placeholder in ("%7Bsize%7D", "{size}", "%s"):
+                        if placeholder in url:
+                            url = url.replace(placeholder, "1024x768")
+                if url.startswith("http://") or url.startswith("https://"):
+                    out.append(url)
+        except Exception:
+            # best-effort normalization
+            pass
+        return out
 
     @staticmethod
     def _passes_filters(
