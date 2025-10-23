@@ -25,9 +25,16 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="RateHawk Hotels API", version="0.1.0")
     app.state.ratehawk_service = service
 
+    # Support single or comma-separated list of origins for dev flexibility
+    origins = (
+        [o.strip() for o in settings.frontend_origin.split(",")]
+        if "," in settings.frontend_origin
+        else [settings.frontend_origin]
+    )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_origin],
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

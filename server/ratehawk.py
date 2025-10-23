@@ -164,11 +164,14 @@ class RatehawkService:
         # Use low-level call to support page/page_size which SDK model doesn't include
         # Ensure dates are ISO strings for JSON serialization
         payload = request.dict(exclude_none=True)
+        # Some upstreams expect offset/limit instead of page/page_size. Compute both for compatibility.
+        offset = max(0, (page - 1) * page_size)
         payload.update({
             "checkin": check_in.isoformat(),
             "checkout": check_out.isoformat(),
-            "page": page,
-            "page_size": page_size,
+            # Prefer offset/limit; leave page/page_size out to avoid ambiguity
+            "offset": offset,
+            "limit": page_size,
             "sort": "popularity",
         })
         raw = self.api._post_request(  # type: ignore[attr-defined]
@@ -184,12 +187,16 @@ class RatehawkService:
 
         hotels = response.data.hotels or []
         filtered: List[HotelSummary] = []
-        info_budget = self._max_info_calls_per_search
-        # We only need up to this many results to serve the requested page.
+        # Increase budget for deeper pages to allow skipping enough accepted hotels, but cap to avoid overload
+        info_budget = max(self._max_info_calls_per_search, (page + 1) * page_size)
+        info_budget = min(info_budget, 500)
+        # Manual paging guard in case upstream ignores offset/limit
+        to_skip = max(0, (page - 1) * page_size)
         needed = page_size
         log = logging.getLogger(__name__)
         processed_all = True
 
+        accepted_so_far = 0
         for hotel in hotels:
             # First, compute price info and apply price-only filters to avoid unnecessary info calls
             price_info = self._select_price(hotel.rates)
@@ -231,15 +238,19 @@ class RatehawkService:
                 amenity_filter=amenity_filter,
             ):
                 continue
+            # Count accepted
+            accepted_so_far += 1
+            # Skip items that belong to previous pages
+            if accepted_so_far <= to_skip:
+                continue
+            # Collect for this page
             filtered.append(summary)
-
-            # Stop once we've collected enough items to serve the requested page
             if len(filtered) >= needed:
                 processed_all = False
                 break
 
         # Prefer upstream total to keep correct pagination across pages
-        total = getattr(response.data, "total_hotels", None) or len(filtered)
+        total = getattr(response.data, "total_hotels", None) or len(hotels)
         # Upstream already returns the requested page; no additional slicing needed
         paginated_items = filtered
         return PaginatedHotels(items=paginated_items, page=page, page_size=page_size, total=total)
@@ -591,4 +602,6 @@ def handle_service_error(exc: RatehawkClientError) -> HTTPException:
     """Convert Ratehawk client errors to HTTP responses."""
 
     return HTTPException(status_code=502, detail=str(exc))
+
+
 
