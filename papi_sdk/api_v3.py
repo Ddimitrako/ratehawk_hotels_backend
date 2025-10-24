@@ -2,6 +2,8 @@ from sys import version_info
 from typing import Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from requests.auth import HTTPBasicAuth
 
 from papi_sdk.__version__ import __name__, __version__
@@ -62,6 +64,37 @@ class APIv3:
         self.key_id, self.key = self._get_key_data(key)
         self.session = requests.Session()
         self.session.auth = HTTPBasicAuth(self.key_id, self.key)
+        # Harden session against transient network failures and stale keep-alives
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "POST"),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=50)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        # Some upstreams behave better if we avoid reusing connections
+        self.session.headers.update({"Connection": "close"})
+
+    def _reset_session(self):
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        self.session = requests.Session()
+        self.session.auth = HTTPBasicAuth(self.key_id, self.key)
+        adapter = HTTPAdapter(max_retries=Retry(
+            total=3, connect=3, read=3, backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504), allowed_methods=("GET", "POST"),
+            raise_on_status=False,
+        ), pool_connections=20, pool_maxsize=50)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        self.session.headers.update({"Connection": "close"})
 
     @staticmethod
     def _get_key_data(key: str) -> Tuple[str, str]:
@@ -105,8 +138,28 @@ class APIv3:
         Inner method for POST requests.
         """
         requests_kwargs = self._add_user_agent(requests_kwargs)
-        response = self.session.post(endpoint, json=json, **requests_kwargs)
-        return response.json()
+        if "timeout" not in requests_kwargs:
+            requests_kwargs["timeout"] = 30
+        try:
+            response = self.session.post(endpoint, json=json, **requests_kwargs)
+        except requests.RequestException:
+            # Recreate session and retry once on connection-level failures
+            self._reset_session()
+            response = self.session.post(endpoint, json=json, **requests_kwargs)
+        # Raise for HTTP error codes so callers can handle gracefully
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            # Try to return upstream error payload when possible
+            try:
+                return response.json()
+            except Exception:
+                raise e
+        try:
+            return response.json()
+        except ValueError:
+            # Non-JSON upstream reply; return a minimal error payload
+            return {"error": f"Non-JSON response from upstream ({response.status_code})"}
 
     def overview(self, **requests_kwargs) -> OverviewResponse:
         """
