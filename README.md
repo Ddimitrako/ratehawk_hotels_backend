@@ -90,7 +90,8 @@ FRONTEND_ORIGIN=http://localhost:3000
 ### 3. Run the development server
 
 ```bash
-uvicorn server.main:app --reload
+ cd .\backend-ratehawk\
+uvicorn server.main:app --reload --port 9000
 ```
 
 Alternatively, if you prefer the FastAPI CLI:
