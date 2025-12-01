@@ -198,6 +198,11 @@ class RatehawkService:
 
         accepted_so_far = 0
         for hotel in hotels:
+            # Short-circuit before making another hotel_info call if we've
+            # already gathered enough accepted items for this page.
+            if accepted_so_far >= (to_skip + needed) or len(filtered) >= needed:
+                processed_all = False
+                break
             # First, compute price info and apply price-only filters to avoid unnecessary info calls
             price_info = self._select_price(hotel.rates)
             if min_price is not None or max_price is not None:

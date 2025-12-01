@@ -103,16 +103,28 @@ The automatic OpenAPI documentation is available at [http://localhost:8000/docs]
 
 ### Run with Docker Compose
 
-If you would rather avoid installing Python locally, the repository includes a Docker setup that
-starts the API with live-reload support:
+If you would rather avoid installing Python locally, the repository includes a Docker setup. For local dev you can keep `--reload` and a bind mount; for production we run without reload and use a named cache volume (bound to port 9000):
 
 ```bash
 cp .env.example .env  # make sure your credentials are filled in
 docker compose up --build
 ```
 
-The service will be available at [http://localhost:8000](http://localhost:8000). Any source changes
-on the host are mounted into the container so you can iterate without rebuilding.
+The service will be available at [http://localhost:9000](http://localhost:9000). The compose file now starts uvicorn without `--reload` and no source bind mount; it mounts a named volume at `/app/.cache` to persist the hotel cache across container restarts.
+
+If you keep a large RateHawk dump (e.g., ~3 GB) to prewarm the cache, do **not** commit it or the `.cache/` folder.
+Store the dump outside git (e.g., `/data/ratehawk/partner_feed_dump.json.zst`) and prewarm via Compose:
+
+```bash
+# set PAPI_HOTEL_CACHE_PATH in .env (e.g., .cache/hotel_info.sqlite)
+docker compose run --rm \
+  -v /data/ratehawk/partner_feed_dump.json.zst:/data/partner_feed_dump.json.zst:ro \
+  api python tools/import_dump_to_cache.py /data/partner_feed_dump.json.zst \
+      --language en \
+      --cache .cache/hotel_info.sqlite
+```
+
+After prewarm, you can start normally with `docker compose up`. For dev, feel free to temporarily add `--reload` and a bind mount to the service; for production, keep the current settings (no reload, no source bind).
 
 On startup the container will attempt to pre-warm the Hotel Info cache if `PAPI_HOTEL_CACHE_PATH` is set
 and the file is missing. It will call the dump endpoint using your credentials and import it.

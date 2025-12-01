@@ -9,6 +9,8 @@ __pycache__/
 .tox/
 .cache
 .pytest_cache/
+.env
+*.zst
 docs/_build/
 *.tar.gz
 *.whl
