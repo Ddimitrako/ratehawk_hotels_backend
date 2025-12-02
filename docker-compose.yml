@@ -1,9 +1,10 @@
 version: '3.9'
 
 services:
-  api:
+  ratehawk-api:
     build: .
     command: uvicorn server.main:app --host 0.0.0.0 --port 9000
+    container_name:  ratehawk-api
     env_file:
       - .env
     ports:
@@ -11,6 +12,14 @@ services:
     volumes:
       - cache:/app/.cache
     restart: unless-stopped
+    networks:
+      - voyag_network
+
+networks:
+  voyag_network:
+    # This tells Docker Compose to connect to an existing network
+    # instead of creating a new one.
+    external: true
 
 volumes:
   cache:
