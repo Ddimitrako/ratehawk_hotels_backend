@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
+import codecs
 
 try:
     from zstandard import ZstdDecompressor  # type: ignore
@@ -19,12 +20,13 @@ def iter_dump_lines(path: Path) -> Iterator[str]:
         dctx = ZstdDecompressor()
         with open(path, "rb") as fh:
             with dctx.stream_reader(fh) as reader:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
                 prev = ""
                 while True:
                     chunk = reader.read(2 ** 24)
                     if not chunk:
                         break
-                    raw = chunk.decode("utf-8")
+                    raw = decoder.decode(chunk)
                     lines = raw.split("\n")
                     for i, line in enumerate(lines[:-1]):
                         if i == 0:
@@ -33,6 +35,12 @@ def iter_dump_lines(path: Path) -> Iterator[str]:
                             continue
                         yield line
                     prev = lines[-1]
+                # flush any remaining decoded text
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    prev += tail
+                if prev.strip():
+                    yield prev
     else:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
@@ -125,4 +133,3 @@ def to_hotel_info_payload(h: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
     return payload
-
