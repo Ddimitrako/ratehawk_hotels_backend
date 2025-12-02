@@ -19,6 +19,7 @@ COPY . .
 
 RUN chmod +x docker-entrypoint.sh
 
-EXPOSE 8000
+# Runtime port (uvicorn bound via compose/entrypoint)
+EXPOSE 9000
 ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "9000"]
