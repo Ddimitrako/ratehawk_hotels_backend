@@ -12,15 +12,11 @@ To know more about the benefits of our API integration or to sign up please chec
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.12+
 - requests
 - pydantic
 
-## Installation
 
-```
-pip install papi-sdk
-```
 
 ## Quickstart
 
@@ -44,7 +40,7 @@ overview = papi.overview(timeout=1)
 Another example is downloading hotels dump with `api/b2b/v3/hotel/info/dump` endpoint:
 
 ```python
-data = HotelInfoDumpRequest(language='ru')
+data = HotelInfoDumpRequest(language='en')
 dump = papi.get_hotel_info_dump(data=data)
 print(dump.data.url)
 ```
@@ -90,7 +86,7 @@ FRONTEND_ORIGIN=http://localhost:3000
 ### 3. Run the development server
 
 ```bash
- cd .\backend-ratehawk\
+cd ./backend-ratehawk/
 uvicorn server.main:app --reload --port 9000
 ```
 
@@ -173,7 +169,7 @@ You can import the ETG hotel dump into the local cache to avoid hitting limits o
 - Download a dump (or use an existing `.zst` file) following ETG’s documentation.
 - Run the importer:
 
-```
+```bash
 python tools/import_dump_to_cache.py partner_feed_en.json.zst --language en --cache ./.cache/hotel_info.sqlite
 ```
 
@@ -181,8 +177,89 @@ Use `--limit N` to import only the first N hotels for testing.
 
 Alternatively, fetch the dump via API and import in one step:
 
-```
+```bash
 python tools/fetch_and_import_dump.py --language en --cache ./.cache/hotel_info.sqlite --out ./partner_feed_en.json.zst
+```
+
+#### Uploading a local dump to a remote VM (manual)
+
+If you already have a `partner_feed_dump.json.zst` file on your local machine and need to use it on a remote VM:
+
+**Option A – `scp` (CLI)**
+
+```bash
+scp /path/to/partner_feed_dump.json.zst root@<SERVER_IP>:/home/ratehawk_hotels_backend/data/
+```
+
+Ensure the directory exists on the VM:
+
+```bash
+ssh root@<SERVER_IP>
+mkdir -p /home/ratehawk_hotels_backend/data
+```
+
+**Option B – WinSCP (Windows GUI)**
+
+1. Open WinSCP  
+2. Connect as `root@<SERVER_IP>`  
+3. Go to `/home/ratehawk_hotels_backend/data/`  
+4. Drag & drop the `partner_feed_dump.json.zst` file  
+
+**Option C – `rsync` (for large files)**
+
+```bash
+rsync -avP /path/to/partner_feed_dump.json.zst   root@<SERVER_IP>:/home/ratehawk_hotels_backend/data/
+```
+
+#### Importing the uploaded dump into the cache (remote VM)
+
+Once the dump is on the VM:
+
+```bash
+ssh root@<SERVER_IP>
+cd /home/ratehawk_hotels_backend
+
+docker compose run --rm   -v $(pwd)/data:/data   api python tools/import_dump_to_cache.py /data/partner_feed_dump.json.zst       --language en       --cache .cache/hotel_info.sqlite
+
+docker compose up -d
+```
+
+Verify the cache file exists and is non-trivial:
+
+```bash
+docker compose exec api ls -lh .cache
+docker compose exec api du -h .cache
+```
+
+#### Troubleshooting: DNS / `api.worldota.net` resolution
+
+If the backend fails to fetch the dump automatically with an error like:
+
+```text
+Failed to resolve 'api.worldota.net' ([Errno -3] Temporary failure in name resolution)
+```
+
+you likely need to configure DNS for Docker.
+
+On the VM:
+
+```bash
+sudo nano /etc/docker/daemon.json
+```
+
+
+Then restart Docker and your stack:
+
+```bash
+sudo systemctl restart docker
+docker compose down
+docker compose up -d
+```
+
+After that, the built-in script should work again:
+
+```bash
+docker compose run --rm api python tools/fetch_and_import_dump.py     --language en     --cache .cache/hotel_info.sqlite     --out /tmp/partner_feed_dump.json.zst
 ```
 
 ### Cache stats endpoint
