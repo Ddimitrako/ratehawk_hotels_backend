@@ -179,7 +179,14 @@ class RatehawkService:
             json=payload,
             timeout=self.settings.request_timeout,
         )
-        response = B2BRegionResponse(**raw)
+        try:
+            response = B2BRegionResponse(**raw)
+        except ValidationError:
+            sanitized_raw = self._sanitize_search_region_payload(raw)
+            try:
+                response = B2BRegionResponse(**sanitized_raw)
+            except ValidationError as exc:
+                raise RatehawkClientError(f"search_region payload invalid: {exc}") from exc
         if response.error:
             raise RatehawkClientError(str(response.error))
         if not response.data:
@@ -259,6 +266,29 @@ class RatehawkService:
         # Upstream already returns the requested page; no additional slicing needed
         paginated_items = filtered
         return PaginatedHotels(items=paginated_items, page=page, page_size=page_size, total=total)
+
+    @staticmethod
+    def _sanitize_search_region_payload(raw: dict) -> dict:
+        """Patch common upstream shape drifts so SDK models can parse safely.
+
+        Some responses intermittently omit `data.total_hotels`.
+        """
+        if not isinstance(raw, dict):
+            return raw
+
+        data = raw.get("data")
+        if not isinstance(data, dict):
+            return raw
+
+        hotels = data.get("hotels")
+        if not isinstance(hotels, list):
+            hotels = []
+            data["hotels"] = hotels
+
+        if data.get("total_hotels") is None:
+            data["total_hotels"] = len(hotels)
+
+        return raw
 
     def hotel_details(self, hotel_id: str, language: Optional[str] = None) -> HotelDetails:
         info = self._hotel_info(hotel_id, language)
